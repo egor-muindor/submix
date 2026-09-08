@@ -27,6 +27,81 @@ Two services ship in one Docker image, plus a local config editor:
 - `cmd/extras-ui` — local web editor for `extras.yaml` with a live preview of
   the rules against real provider entries. Not part of the Docker image.
 
+## Quick start
+
+Prerequisites: a Remnawave 3.x panel and `remnawave-subscription-page` running
+in Docker on the network `remnawave-network` (the default of the Remnawave
+compose file), and a panel API token. The subscription-page token
+(`REMNAWAVE_API_TOKEN` in the panel compose file) is sufficient.
+
+On the panel host:
+
+```bash
+mkdir -p /opt/submix/cache && cd /opt/submix
+curl -fsSLO https://raw.githubusercontent.com/egor-muindor/submix/main/deploy/docker-compose.yml
+
+echo "PANEL_TOKEN=<panel API token>" > .env && chmod 600 .env
+
+# Start in passthrough mode: nothing is mixed until you add subscriptions.
+printf 'users:\n  default_tags: []\n' > extras.yaml
+sudo chgrp 10001 extras.yaml && chmod 640 extras.yaml   # the container runs as uid 10001
+sudo chown -R 10001:10001 cache
+
+docker compose up -d
+docker compose exec sub-mixer  wget -qO- http://127.0.0.1:3020/healthz   # ok
+docker compose exec extras-api wget -qO- http://127.0.0.1:3030/healthz   # ok
+```
+
+Point the subscription page at the mixer. In the panel's `docker-compose.yml`,
+service `remnawave-subscription-page`, change
+
+```yaml
+      - REMNAWAVE_PANEL_URL=http://remnawave:3000
+```
+
+to
+
+```yaml
+      - REMNAWAVE_PANEL_URL=http://sub-mixer:3020
+```
+
+and run `docker compose up -d remnawave-subscription-page` there. Subscriptions
+now flow through sub-mixer unchanged; `scripts/compare-passthrough.sh
+<shortUuid>` confirms that panel and mixer responses are identical.
+
+Then describe what to mix in `extras.yaml` (start from
+[`deploy/extras.example.yaml`](deploy/extras.example.yaml), or edit it locally
+with extras-ui) and restart extras-api:
+
+```bash
+docker compose restart extras-api
+docker compose logs --since 1m extras-api    # "subscription fetched" parsed=N kept=M
+```
+
+Users whose panel tag maps to the entries' tags (or everyone, via
+`users.default_tags`) now see the extra nodes in every client format.
+Rollback at any time: set `REMNAWAVE_PANEL_URL` back to
+`http://remnawave:3000` and `docker compose up -d remnawave-subscription-page`.
+
+### Docker image
+
+`ghcr.io/egor-muindor/submix` is built by GitHub Actions for `linux/amd64` and
+`linux/arm64`:
+
+| Tag | Meaning |
+|-----|---------|
+| `latest` | current `main` |
+| `vX.Y.Z`, `vX.Y` | releases |
+| `sha-<short>` | every build |
+
+One image holds both binaries: `/usr/local/bin/sub-mixer` (the image
+entrypoint) and `/usr/local/bin/extras-api`; the compose file selects one per
+service via `entrypoint:`. The container runs as uid 10001. To build your own:
+
+```bash
+docker build -t ghcr.io/egor-muindor/submix:latest .
+```
+
 ## How it works
 
 ```
@@ -201,10 +276,10 @@ there is deliberately no hot reload.
 
 ## Deployment
 
-See [`deploy/README.md`](deploy/README.md): building the image, the compose
-file, wiring the subscription page through the mixer, verifying passthrough
-before enabling any mixing, rollback, and updating the config with
-`scripts/deploy-extras-config.sh`.
+The [Quick start](#quick-start) covers a standard installation.
+[`deploy/README.md`](deploy/README.md) adds the details: building the image
+yourself, permissions, verifying passthrough before enabling any mixing,
+rollback, and updating the config with `scripts/deploy-extras-config.sh`.
 
 ## Compatibility
 

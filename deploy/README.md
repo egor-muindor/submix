@@ -7,20 +7,15 @@ lives in `/opt/submix` on the panel host; adjust to taste.
 
 ## Initial installation
 
-The image is built from this repository
-(`git clone https://github.com/egor-muindor/submix.git`). Either build it on the host
-(`docker compose build`, needs `golang:1.26-alpine` plus build cache, roughly
-300 MB) or build it elsewhere and ship it with `docker save | docker load`:
+The compose file uses the prebuilt multi-arch image
+`ghcr.io/egor-muindor/submix:latest` (see the Docker image section of the main
+README for tags). Nothing has to be built on the host.
 
 ```bash
-# --- on the build machine, in the repository root ---
-docker buildx build --platform linux/amd64 -t submix:latest --load .
-docker save submix:latest | gzip -1 | ssh user@panel-host 'gunzip | docker load'
-
 # --- on the panel host ---
 mkdir -p /opt/submix/cache
 cd /opt/submix
-# copy deploy/docker-compose.yml here
+curl -fsSLO https://raw.githubusercontent.com/egor-muindor/submix/main/deploy/docker-compose.yml
 
 # extras-api runs as uid 10001 inside the container (see Dockerfile). Without
 # the chown Store.persist fails with EACCES, the last-good cache never reaches
@@ -40,9 +35,24 @@ chmod 600 .env
 printf 'users:\n  default_tags: []\n' > extras.yaml
 sudo chgrp 10001 extras.yaml && chmod 640 extras.yaml   # you edit, the container reads
 
-docker compose up -d --no-build --pull never
+docker compose pull
+docker compose up -d
 docker compose ps
 docker compose logs -f
+```
+
+### Building the image yourself
+
+Build on the host (`git clone https://github.com/egor-muindor/submix.git`,
+then `docker build -t ghcr.io/egor-muindor/submix:latest .`; needs
+`golang:1.26-alpine` plus build cache, roughly 300 MB), or build elsewhere and
+ship the image with `docker save | docker load`:
+
+```bash
+# --- on the build machine, in the repository root ---
+docker buildx build --platform linux/amd64 -t ghcr.io/egor-muindor/submix:latest --load .
+docker save ghcr.io/egor-muindor/submix:latest | gzip -1 | ssh user@panel-host 'gunzip | docker load'
+# then on the host: docker compose up -d --no-build --pull never
 ```
 
 Health checks:

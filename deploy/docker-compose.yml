@@ -1,8 +1,10 @@
+# submix next to a Remnawave panel. Both services use the prebuilt image from
+# GitHub Container Registry; to run your own build instead:
+#   docker build -t ghcr.io/egor-muindor/submix:latest .   (in the repository root)
+# Requires PANEL_TOKEN in ./.env and the config in ./extras.yaml (see README).
 services:
   sub-mixer:
-    build:
-      context: ..
-    image: submix:latest
+    image: ghcr.io/egor-muindor/submix:latest
     container_name: sub-mixer
     hostname: sub-mixer
     restart: always
@@ -22,9 +24,7 @@ services:
       - remnawave-network
 
   extras-api:
-    build:
-      context: ..
-    image: submix:latest
+    image: ghcr.io/egor-muindor/submix:latest
     container_name: extras-api
     hostname: extras-api
     restart: always

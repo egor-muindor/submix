@@ -1,0 +1,29 @@
+defaults:
+  refresh: 6h
+
+subscriptions:
+  - name: provider-a
+    url: https://provider.example/sub/token
+    rules:
+      - match: "Germany|DE"
+        tags: [de]
+      - match: "Tbilisi|🇬🇪"
+        tags: [ge, premium]
+  - name: provider-b
+    url: https://other.example/sub/xyz
+    user_agent: "v2rayNG/1.8.5"
+    refresh: 1h
+    rules:
+      - match: ".*"
+        tags: [bulk]
+
+static_entries:
+  - name: "My exit"
+    uri: "vless://uuid@my.example.com:443?security=tls#My"
+    tags: [premium]
+
+users:
+  default_tags: [bulk]
+  by_panel_tag:
+    PREMIUM: [de, premium]
+    FRIENDS_GE: [ge]

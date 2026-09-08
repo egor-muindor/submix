@@ -1,0 +1,54 @@
+services:
+  sub-mixer:
+    build:
+      context: ..
+    image: submix:latest
+    container_name: sub-mixer
+    hostname: sub-mixer
+    restart: always
+    entrypoint: ["/usr/local/bin/sub-mixer"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    environment:
+      - LISTEN=:3020
+      - PANEL_URL=http://remnawave:3000
+      - EXTRAS_URL=http://extras-api:3030
+      - EXTRAS_TIMEOUT=500ms
+      - INTERCEPT_PATHS=^/api/sub/([^/]+)
+    networks:
+      - remnawave-network
+
+  extras-api:
+    build:
+      context: ..
+    image: submix:latest
+    container_name: extras-api
+    hostname: extras-api
+    restart: always
+    entrypoint: ["/usr/local/bin/extras-api"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    env_file:
+      - .env
+    environment:
+      - LISTEN=:3030
+      - CONFIG=/etc/submix/extras.yaml
+      - CACHE_DIR=/var/lib/submix
+      - PANEL_URL=http://remnawave:3000
+      - PANEL_CACHE_TTL=5m
+    volumes:
+      - ./extras.yaml:/etc/submix/extras.yaml:ro
+      - ./cache:/var/lib/submix
+    networks:
+      - remnawave-network
+
+networks:
+  remnawave-network:
+    name: remnawave-network
+    external: true

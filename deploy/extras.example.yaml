@@ -1,0 +1,39 @@
+# extras-api configuration. Copy to deploy/extras.yaml and fill in.
+# Apply changes with: docker compose restart extras-api
+# (or scripts/deploy-extras-config.sh from your workstation).
+
+defaults:
+  # User-Agent for outgoing requests to external subscriptions.
+  # A Shadowrocket agent makes most providers return a base64 link list.
+  user_agent: "Shadowrocket/3378 CFNetwork/3860.700.1 Darwin/25.6.0 iPhone15,2"
+  # Poll interval: 1h | 6h | 24h (default 24h, minimum 1m).
+  refresh: 24h
+
+subscriptions:
+  - name: provider-a
+    url: https://provider.example/sub/TOKEN
+    # user_agent: "v2rayNG/1.8.5"   # optional, defaults.user_agent otherwise
+    # refresh: 6h                   # optional, defaults.refresh otherwise
+    rules:
+      # A rule is a regexp on the entry name plus the tags that matching
+      # entries receive. An entry passes when at least one rule matches; the
+      # tags of all matching rules are united. No match — the entry is dropped.
+      - match: "Germany|DE|🇩🇪"
+        tags: [de]
+      - match: "Georgia|GE|🇬🇪"
+        tags: [ge]
+
+static_entries:
+  - name: "My exit"
+    uri: "vless://uuid@my.example.com:443?type=tcp&security=reality&pbk=PK&sid=aa&sni=www.microsoft.com&fp=chrome&flow=xtls-rprx-vision#My"
+    tags: [premium]
+
+users:
+  # Tags every active user receives (including users without a panel tag).
+  default_tags: []
+  # Remnawave user tag -> mix tags to serve to that user.
+  # A panel user has a single tag, so combinations are expressed as a
+  # dedicated panel tag (for example PREMIUM_GE) with its own mapping here.
+  by_panel_tag:
+    PREMIUM: [de, premium]
+    FRIENDS_GE: [ge]

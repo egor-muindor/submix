@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>extras-ui</title>
+<style>
+  body { font: 14px/1.45 system-ui, -apple-system, sans-serif; margin: 0; padding: 16px 24px 80px; max-width: 1100px; color: #222; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  h1 .muted { font-weight: normal; font-size: 13px; }
+  h2 { font-size: 15px; margin: 24px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #ddd; display: flex; align-items: center; gap: 12px; }
+  .card { border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .row > label { width: 110px; color: #555; flex: none; }
+  input[type=text], select { flex: 1; min-width: 160px; padding: 4px 6px; border: 1px solid #bbb; border-radius: 4px; font: inherit; }
+  input.narrow { flex: 0 0 120px; min-width: 0; }
+  table input[type=text] { width: 100%; box-sizing: border-box; }
+  button { padding: 4px 10px; font: inherit; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
+  th { color: #555; font-weight: 500; }
+  td.num { width: 32px; color: #777; }
+  td.act { width: 32px; }
+  .muted { color: #777; }
+  .err { color: #b00020; }
+  .banner { padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
+  .banner.err { background: #fdecea; color: #b00020; }
+  .banner.warn { background: #fff4d6; color: #7a5200; }
+  .hidden { display: none; }
+  .tag { display: inline-block; background: #e8ecff; border-radius: 3px; padding: 0 5px; margin: 0 3px 2px 0; font-size: 12px; }
+  .rule-idx { display: inline-block; background: #e3f4e6; border-radius: 3px; padding: 0 5px; margin: 0 3px 2px 0; font-size: 12px; }
+  .warn-icon { cursor: help; color: #c77700; margin-left: 4px; }
+  .dropped td { color: #999; }
+  pre { background: #f6f6f6; padding: 10px; overflow: auto; font-size: 12px; white-space: pre; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  .filters label { margin-right: 10px; }
+</style>
+</head>
+<body>
+<h1>extras-ui <span id="path" class="muted"></span></h1>
+<div class="toolbar">
+  <button id="btn-save">Save to file</button>
+  <button id="btn-reload">Reload file</button>
+  <button id="btn-import">Import YAML</button>
+  <input type="file" id="file-import" accept=".yaml,.yml" class="hidden">
+  <button id="btn-yaml">Show YAML</button>
+  <span id="save-status" class="muted"></span>
+</div>
+<div id="draft-banner" class="banner warn hidden">Draft differs from the file on disk. <button id="btn-reset">Reset to file</button></div>
+<div id="storage-banner" class="banner warn hidden">Draft is not persisted in the browser: localStorage is unavailable or full.</div>
+<div id="banner" class="banner err hidden"></div>
+<div id="yaml-box" class="hidden"><button id="btn-copy">Copy</button><pre id="yaml-pre"></pre></div>
+
+<h2>Defaults</h2>
+<div class="card" id="defaults"></div>
+
+<h2>Subscriptions <button id="btn-add-sub">Add subscription</button></h2>
+<div id="subs"></div>
+
+<h2>Static entries <button id="btn-add-static">Add entry</button></h2>
+<div class="card"><table id="static-table"></table></div>
+
+<h2>Users</h2>
+<div class="card" id="users"></div>
+
+<h2>User check</h2>
+<div class="card">
+  <div class="row"><label>Panel tag</label><select id="panel-tag"></select></div>
+  <div class="row"><label>Mix tags</label><span id="user-tags" class="muted"></span></div>
+  <table id="user-entries"></table>
+</div>
+
+<script>
+'use strict';
+
+// ---------- API ----------
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || res.statusText);
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+// ---------- state ----------
+let path = '';
+let fileConfig = emptyConfig();   // what the file holds (to compare against the draft)
+let state = { config: emptyConfig(), fetched: {}, panel_tag: '' };
+const filters = {};               // subscription index -> all | kept | dropped
+const fetchErrors = {};           // subscription name -> text of the last fetch error
+let fileError = '';               // file read error: stays in the banner until a successful read
+let ready = false;                // config loaded; before that "Save" would write an empty template
+let previewSeq = 0;               // number of the latest preview request: stale responses are discarded
+
+function emptyConfig() {
+  return {
+    defaults: { user_agent: '', refresh: '' },
+    subscriptions: [],
+    static_entries: [],
+    users: { default_tags: [], by_panel_tag: [] },
+  };
+}
+
+// Inside the page by_panel_tag is an ordered list of {panel, tags} rows so
+// the key can be edited. An object is sent to the API.
+function fromApi(cfg) {
+  cfg = cfg || {};
+  const users = cfg.users || {};
+  const defaults = cfg.defaults || {};
+  const rows = Object.entries(users.by_panel_tag || {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([panel, tags]) => ({ panel, tags: tags || [] }));
+  return {
+    defaults: { user_agent: defaults.user_agent || '', refresh: defaults.refresh || '' },
+    subscriptions: (cfg.subscriptions || []).map(s => ({
+      name: s.name || '', url: s.url || '', user_agent: s.user_agent || '', refresh: s.refresh || '',
+      rules: (s.rules || []).map(r => ({ match: r.match || '', tags: r.tags || [] })),
+    })),
+    static_entries: (cfg.static_entries || []).map(e => ({ name: e.name || '', uri: e.uri || '', tags: e.tags || [] })),
+    users: { default_tags: users.default_tags || [], by_panel_tag: rows },
+  };
+}
+
+function toApi(cfg) {
+  const map = {};
+  cfg.users.by_panel_tag.forEach(r => { if (r.panel) map[r.panel] = r.tags; });
+  return {
+    defaults: cfg.defaults,
+    subscriptions: cfg.subscriptions,
+    static_entries: cfg.static_entries,
+    users: { default_tags: cfg.users.default_tags, by_panel_tag: map },
+  };
+}
+
+// canon brings a value into a comparable form: empty strings, lists and
+// objects are dropped, keys are sorted.
+function canon(v) {
+  if (Array.isArray(v)) return v.map(canon);
+  if (v && typeof v === 'object') {
+    const out = {};
+    Object.keys(v).sort().forEach(k => {
+      const c = canon(v[k]);
+      const empty = c === '' || c == null || (Array.isArray(c) && c.length === 0) ||
+        (c && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length === 0);
+      if (!empty) out[k] = c;
+    });
+    return out;
+  }
+  return v;
+}
+function sameConfig(a, b) { return JSON.stringify(canon(toApi(a))) === JSON.stringify(canon(toApi(b))); }
+// isDraftShape filters out a localStorage draft written by another version of
+// the page: otherwise comparison or rendering would crash and the page would
+// stay empty.
+function isDraftShape(c) {
+  return !!(c && c.defaults && Array.isArray(c.subscriptions) && Array.isArray(c.static_entries) &&
+    c.users && Array.isArray(c.users.default_tags) && Array.isArray(c.users.by_panel_tag));
+}
+function clone(v) { return JSON.parse(JSON.stringify(v)); }
+
+// ---------- helpers ----------
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
+function splitTags(s) { return s.split(',').map(t => t.trim()).filter(Boolean); }
+function el(id) { return document.getElementById(id); }
+function setText(id, text) { const n = el(id); if (n) n.textContent = text; }
+function fmtTime(iso) { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString(); }
+function effectiveUA(sub) { return sub.user_agent || state.config.defaults.user_agent || ''; }
+function showBanner(text) { const b = el('banner'); b.textContent = text; b.classList.toggle('hidden', !text); }
+function showDraftBanner(show) { el('draft-banner').classList.toggle('hidden', !show); }
+function tagsHTML(tags) { return (tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(''); }
+function warnIcon(errs) {
+  if (!errs || !Object.keys(errs).length) return '';
+  const title = Object.entries(errs).map(([k, v]) => `${k}: ${v}`).join('\n');
+  return `<span class="warn-icon" title="${esc(title)}">⚠</span>`;
+}
+
+// ---------- localStorage ----------
+function storageKey() { return 'extras-ui:' + path; }
+function loadStorage() {
+  try { const raw = localStorage.getItem(storageKey()); return raw ? JSON.parse(raw) : null; }
+  catch (e) { return null; }
+}
+let persistTimer = null;
+function persistSoon() { clearTimeout(persistTimer); persistTimer = setTimeout(persist, 300); }
+function persist() {
+  let ok = true;
+  try {
+    localStorage.setItem(storageKey(), JSON.stringify({
+      config: state.config, fetched: state.fetched, panel_tag: state.panel_tag, saved_at: new Date().toISOString(),
+    }));
+  } catch (e) { ok = false; }
+  el('storage-banner').classList.toggle('hidden', ok);
+}
+
+// ---------- init ----------
+async function init() {
+  let resp;
+  try {
+    resp = await api('GET', '/api/config');
+  } catch (e) {
+    resp = { path: (e.data && e.data.path) || '', config: null };
+    fileError = 'File not read: ' + e.message + '. Start from an empty template or import YAML.';
+  }
+  path = resp.path;
+  setText('path', path);
+  fileConfig = fromApi(resp.config);
+
+  const stored = loadStorage();
+  if (stored && isDraftShape(stored.config) && !sameConfig(stored.config, fileConfig)) {
+    state = { config: stored.config, fetched: stored.fetched || {}, panel_tag: stored.panel_tag || '' };
+  } else {
+    state = { config: clone(fileConfig), fetched: (stored && stored.fetched) || {}, panel_tag: (stored && stored.panel_tag) || '' };
+  }
+  renderAll();
+  schedulePreview();
+  ready = true;
+}
+
+// ---------- render form ----------
+function renderAll() {
+  renderDefaults();
+  renderSubs();
+  renderStatic();
+  renderUsers();
+  renderPanelSelect();
+}
+
+function renderDefaults() {
+  const box = el('defaults');
+  const d = state.config.defaults;
+  box.innerHTML = `
+    <div class="row"><label>user_agent</label><input type="text" data-k="user_agent" placeholder="Shadowrocket/3378 CFNetwork/3860.700.1 Darwin/25.6.0 iPhone15,2"></div>
+    <div class="row"><label>refresh</label><input type="text" data-k="refresh" class="narrow" placeholder="24h"></div>`;
+  box.querySelectorAll('input').forEach(inp => {
+    inp.value = d[inp.dataset.k];
+    inp.oninput = () => { d[inp.dataset.k] = inp.value; schedulePreview(); };
+  });
+}
+
+// Fetched entries are keyed by subscription name; on rename they follow it.
+function renameFetched(oldName, newName) {
+  if (oldName === newName || !state.fetched[oldName]) return;
+  state.fetched[newName] = state.fetched[oldName];
+  delete state.fetched[oldName];
+  if (fetchErrors[oldName]) { fetchErrors[newName] = fetchErrors[oldName]; delete fetchErrors[oldName]; }
+}
+
+function renderSubs() {
+  const box = el('subs');
+  box.innerHTML = '';
+  state.config.subscriptions.forEach((sub, i) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="row"><label>name</label><input type="text" data-k="name">
+        <button data-act="fetch">Fetch</button><button data-act="del">Delete subscription</button></div>
+      <div class="row"><label>url</label><input type="text" data-k="url"></div>
+      <div class="row"><label>user_agent</label><input type="text" data-k="user_agent" placeholder="falls back to defaults"></div>
+      <div class="row"><label>refresh</label><input type="text" data-k="refresh" class="narrow" placeholder="from defaults"></div>
+      <div class="row"><label></label><span id="sub-${i}-status" class="muted"></span></div>
+      <table id="sub-${i}-rules"><tr><th class="num">#</th><th>match (regexp)</th><th>tags</th><th class="act"></th></tr></table>
+      <button data-act="add-rule">Add rule</button>
+      <div id="sub-${i}-entries"></div>`;
+    card.querySelectorAll('input[data-k]').forEach(inp => {
+      inp.value = sub[inp.dataset.k];
+      inp.oninput = () => {
+        if (inp.dataset.k === 'name') renameFetched(sub.name, inp.value);
+        sub[inp.dataset.k] = inp.value;
+        schedulePreview();
+      };
+    });
+    card.querySelector('[data-act=fetch]').onclick = () => fetchSub(i);
+    card.querySelector('[data-act=del]').onclick = () => {
+      delete state.fetched[sub.name];
+      delete fetchErrors[sub.name];
+      state.config.subscriptions.splice(i, 1); renderAll(); schedulePreview();
+    };
+    card.querySelector('[data-act=add-rule]').onclick = () => {
+      sub.rules.push({ match: '', tags: [] }); renderAll(); schedulePreview();
+    };
+    box.appendChild(card);
+    renderRules(i, sub);
+  });
+}
+
+function renderRules(i, sub) {
+  const table = el(`sub-${i}-rules`);
+  sub.rules.forEach((rule, j) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="num">#${j + 1}</td>
+      <td><input type="text" data-k="match"><div id="sub-${i}-rule-${j}-err" class="err"></div></td>
+      <td><input type="text" data-k="tags" placeholder="comma-separated tags"></td>
+      <td class="act"><button>✕</button></td>`;
+    const m = tr.querySelector('[data-k=match]');
+    m.value = rule.match;
+    m.oninput = () => { rule.match = m.value; schedulePreview(); };
+    const t = tr.querySelector('[data-k=tags]');
+    t.value = rule.tags.join(', ');
+    t.oninput = () => { rule.tags = splitTags(t.value); schedulePreview(); };
+    tr.querySelector('button').onclick = () => { sub.rules.splice(j, 1); renderAll(); schedulePreview(); };
+    table.appendChild(tr);
+  });
+}
+
+function renderStatic() {
+  const table = el('static-table');
+  table.innerHTML = '<tr><th>name</th><th>uri</th><th>tags</th><th class="act"></th></tr>';
+  state.config.static_entries.forEach((e, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><input type="text" data-k="name"></td>
+      <td><input type="text" data-k="uri"><span id="static-${i}-err"></span></td>
+      <td><input type="text" data-k="tags" placeholder="comma-separated tags"></td>
+      <td class="act"><button>✕</button></td>`;
+    tr.querySelectorAll('input').forEach(inp => {
+      const k = inp.dataset.k;
+      inp.value = k === 'tags' ? e.tags.join(', ') : e[k];
+      inp.oninput = () => { e[k] = k === 'tags' ? splitTags(inp.value) : inp.value; schedulePreview(); };
+    });
+    tr.querySelector('button').onclick = () => { state.config.static_entries.splice(i, 1); renderAll(); schedulePreview(); };
+    table.appendChild(tr);
+  });
+}
+
+function renderUsers() {
+  const box = el('users');
+  const u = state.config.users;
+  box.innerHTML = `
+    <div class="row"><label>default_tags</label><input type="text" id="default-tags" placeholder="tags every user gets"></div>
+    <table id="panel-table"><tr><th>Panel tag</th><th>mix tags</th><th class="act"></th></tr></table>
+    <button id="btn-add-panel">Add panel tag</button>`;
+  const dt = el('default-tags');
+  dt.value = u.default_tags.join(', ');
+  dt.oninput = () => { u.default_tags = splitTags(dt.value); schedulePreview(); };
+  const table = el('panel-table');
+  u.by_panel_tag.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><input type="text" data-k="panel" placeholder="PREMIUM"></td>
+      <td><input type="text" data-k="tags" placeholder="comma-separated tags"></td>
+      <td class="act"><button>✕</button></td>`;
+    const p = tr.querySelector('[data-k=panel]');
+    p.value = row.panel;
+    p.oninput = () => { row.panel = p.value.trim(); renderPanelSelect(); schedulePreview(); };
+    const t = tr.querySelector('[data-k=tags]');
+    t.value = row.tags.join(', ');
+    t.oninput = () => { row.tags = splitTags(t.value); schedulePreview(); };
+    tr.querySelector('button').onclick = () => { u.by_panel_tag.splice(i, 1); renderAll(); schedulePreview(); };
+    table.appendChild(tr);
+  });
+  el('btn-add-panel').onclick = () => { u.by_panel_tag.push({ panel: '', tags: [] }); renderAll(); schedulePreview(); };
+}
+
+function renderPanelSelect() {
+  const sel = el('panel-tag');
+  const keys = state.config.users.by_panel_tag.map(r => r.panel).filter(Boolean);
+  if (!keys.includes(state.panel_tag)) state.panel_tag = '';
+  sel.innerHTML = '<option value="">no tag</option>' + keys.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+  sel.value = state.panel_tag;
+  sel.onchange = () => { state.panel_tag = sel.value; schedulePreview(); };
+}
+
+// ---------- preview ----------
+let previewTimer = null;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runPreview, 300);
+  persistSoon();
+}
+
+function fetchedForPreview() {
+  const out = {};
+  Object.entries(state.fetched).forEach(([name, f]) => {
+    out[name] = { entries: f.entries.map(e => ({ name: e.name, uri: e.uri })) };
+  });
+  return out;
+}
+
+async function runPreview() {
+  const seq = ++previewSeq;
+  const body = { config: toApi(state.config), fetched: fetchedForPreview(), panel_tag: state.panel_tag };
+  try {
+    const resp = await api('POST', '/api/preview', body);
+    if (seq !== previewSeq) return;   // response for a stale draft
+    applyPreview(resp);
+  } catch (e) {
+    if (seq !== previewSeq) return;
+    showBanner([fileError, 'Preview error: ' + e.message].filter(Boolean).join(' '));
+  }
+}
+
+function duplicatePanelTags() {
+  const seen = {}, dups = [];
+  state.config.users.by_panel_tag.forEach(r => {
+    if (!r.panel) return;
+    if (seen[r.panel]) dups.push(r.panel); else seen[r.panel] = true;
+  });
+  return dups;
+}
+
+function applyPreview(resp) {
+  const dups = duplicatePanelTags();
+  const dupMsg = dups.length ? 'Panel tag defined twice: ' + dups.join(', ') + '. The last row wins in the file.' : '';
+  showBanner([fileError, resp.validation_error || dupMsg].filter(Boolean).join(' '));
+  showDraftBanner(!sameConfig(state.config, fileConfig));
+  el('yaml-pre').textContent = resp.yaml || '';
+
+  state.config.subscriptions.forEach((sub, i) => {
+    const p = (resp.subscriptions || {})[sub.name] || { rule_errors: {}, entries: [] };
+    sub.rules.forEach((_, j) => setText(`sub-${i}-rule-${j}-err`, (p.rule_errors || {})[String(j)] || ''));
+    renderEntries(i, sub, p);
+  });
+  (resp.static_errors || []).forEach((errs, i) => { const n = el(`static-${i}-err`); if (n) n.innerHTML = warnIcon(errs); });
+  renderUser(resp.user || { tags: [], entries: [] });
+}
+
+function renderEntries(i, sub, p) {
+  const status = el(`sub-${i}-status`);
+  const box = el(`sub-${i}-entries`);
+  if (!status || !box) return;
+  const f = state.fetched[sub.name];
+  const err = fetchErrors[sub.name];
+  if (!f) {
+    status.innerHTML = err ? `<span class="err">fetch error: ${esc(err)}</span>` : 'not fetched';
+    box.innerHTML = '';
+    return;
+  }
+  const entries = p.entries || [];
+  const kept = entries.filter(m => m.tags.length).length;
+  const stale = f.url !== sub.url || f.user_agent !== effectiveUA(sub);
+  status.innerHTML = `fetched ${fmtTime(f.fetched_at)}, parsed ${entries.length} / kept ${kept}` +
+    (stale ? ' <span class="err">stale: url or user_agent changed, fetch again</span>' : '') +
+    (err ? ` <span class="err">last fetch failed: ${esc(err)}</span>` : '');
+
+  const mode = filters[i] || 'all';
+  const labels = { all: 'all', kept: 'kept', dropped: 'dropped' };
+  const rows = entries.map((m, k) => ({ m, e: f.entries[k] || {}, k }))
+    .filter(({ m }) => mode === 'all' || (mode === 'kept') === (m.tags.length > 0));
+  box.innerHTML = `<div class="row filters"><span class="muted">Show:</span>` +
+    Object.keys(labels).map(v => `<label><input type="radio" name="flt-${i}" value="${v}" ${v === mode ? 'checked' : ''}> ${labels[v]}</label>`).join('') +
+    `</div><table><tr><th class="num">#</th><th>Name</th><th>Rules</th><th>Tags</th><th class="act"></th></tr>` +
+    rows.map(({ m, e, k }) => `<tr class="${m.tags.length ? '' : 'dropped'}"><td class="num">${k + 1}</td><td>${esc(m.name)}</td>` +
+      `<td>${(m.matched || []).map(j => `<span class="rule-idx">#${j + 1}</span>`).join('')}</td>` +
+      `<td>${tagsHTML(m.tags)}</td><td class="act">${warnIcon(e.errors)}</td></tr>`).join('') +
+    '</table>';
+  box.querySelectorAll(`input[name=flt-${i}]`).forEach(r => {
+    r.onchange = () => { filters[i] = r.value; renderEntries(i, sub, p); };
+  });
+}
+
+function renderUser(user) {
+  el('user-tags').innerHTML = user.tags.length ? tagsHTML(user.tags) : 'none';
+  const table = el('user-entries');
+  table.innerHTML = '<tr><th>Name</th><th>Source</th><th>Tags</th></tr>' +
+    user.entries.map(e => `<tr><td>${esc(e.name)}</td><td>${esc(e.source)}</td><td>${tagsHTML(e.tags)}</td></tr>`).join('') +
+    (user.entries.length ? '' : '<tr><td colspan="3" class="muted">no entries</td></tr>');
+}
+
+// ---------- fetch subscription ----------
+async function fetchSub(i) {
+  const sub = state.config.subscriptions[i];
+  const status = el(`sub-${i}-status`);
+  if (!sub.name) { status.innerHTML = '<span class="err">set name first</span>'; return; }
+  status.textContent = 'fetching…';
+  const ua = effectiveUA(sub);
+  try {
+    const resp = await api('POST', '/api/fetch', { url: sub.url, user_agent: ua });
+    state.fetched[sub.name] = { url: sub.url, user_agent: ua, fetched_at: resp.fetched_at, entries: resp.entries || [] };
+    delete fetchErrors[sub.name];
+  } catch (e) {
+    fetchErrors[sub.name] = e.message;
+  }
+  schedulePreview();
+}
+
+// ---------- toolbar ----------
+el('btn-save').onclick = async () => {
+  if (!ready) { showBanner('Page is still loading, config not saved.'); return; }
+  try {
+    await api('POST', '/api/save', { config: toApi(state.config) });
+    fileError = '';
+    fileConfig = clone(state.config);
+    showDraftBanner(false);
+    persist();
+    setText('save-status', 'saved ' + new Date().toLocaleTimeString());
+  } catch (e) {
+    showBanner('Not saved: ' + e.message);
+  }
+};
+
+async function reloadFromFile(ask) {
+  if (ask && !confirm('Replace the draft with the file contents?')) return;
+  try {
+    const resp = await api('GET', '/api/config');
+    fileError = '';
+    fileConfig = fromApi(resp.config);
+    state.config = clone(fileConfig);
+    renderAll();
+    schedulePreview();
+  } catch (e) {
+    fileError = 'File not read: ' + e.message;
+    schedulePreview();
+  }
+}
+el('btn-reload').onclick = () => reloadFromFile(true);
+el('btn-reset').onclick = () => reloadFromFile(false);
+
+el('btn-import').onclick = () => el('file-import').click();
+el('file-import').onchange = async (ev) => {
+  const file = ev.target.files[0];
+  if (!file) return;
+  try {
+    const resp = await api('POST', '/api/import', { yaml: await file.text() });
+    state.config = fromApi(resp.config);
+    renderAll();
+    schedulePreview();
+  } catch (e) {
+    showBanner('Import failed: ' + e.message);
+  }
+  ev.target.value = '';
+};
+
+el('btn-yaml').onclick = () => el('yaml-box').classList.toggle('hidden');
+el('btn-copy').onclick = () => {
+  navigator.clipboard.writeText(el('yaml-pre').textContent)
+    .catch(e => showBanner('Copy failed: ' + e.message));
+};
+el('btn-add-sub').onclick = () => {
+  state.config.subscriptions.push({ name: '', url: '', user_agent: '', refresh: '', rules: [{ match: '', tags: [] }] });
+  renderAll(); schedulePreview();
+};
+el('btn-add-static').onclick = () => {
+  state.config.static_entries.push({ name: '', uri: '', tags: [] });
+  renderAll(); schedulePreview();
+};
+
+init();
+</script>
+</body>
+</html>

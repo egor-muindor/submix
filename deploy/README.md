@@ -45,8 +45,8 @@ docker compose logs -f
 
 Build on the host (`git clone https://github.com/egor-muindor/submix.git`,
 then `docker build -t ghcr.io/egor-muindor/submix:latest .`; needs
-`golang:1.26-alpine` plus build cache, roughly 300 MB), or build elsewhere and
-ship the image with `docker save | docker load`:
+`golang:1.27.3-alpine3.24` plus build cache, roughly 300 MB), or build
+elsewhere and ship the image with `docker save | docker load`:
 
 ```bash
 # --- on the build machine, in the repository root ---

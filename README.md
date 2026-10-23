@@ -287,7 +287,8 @@ rollback, and updating the config with `scripts/deploy-extras-config.sh`.
 |-----------|---------|-------|
 | Remnawave panel (`remnawave/backend`) | 3.2.1 | developed and run against this release; 3.x API |
 | `remnawave/subscription-page` | current image | only `REMNAWAVE_PANEL_URL` is changed |
-| Go | 1.25+ | see `go.mod`; Docker image builds with `golang:1.26-alpine` |
+| Go | 1.25+ | language version in `go.mod`; its `toolchain` line selects Go 1.27.3 (security fixes, including the `crypto/x509` distrust of compromised intermediate CAs), downloaded automatically unless `GOTOOLCHAIN=local` |
+| Docker image | `alpine:3.24` | binaries built with `golang:1.27.3-alpine3.24`; `ca-certificates` from the Alpine repository at build time |
 
 Panel endpoints used: `/api/sub/{shortUuid}` and its `/clash`, `/singbox`,
 `/xray-json`, `/info` variants (proxied), `/api/sub/{shortUuid}/info` and

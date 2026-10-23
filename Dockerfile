@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS build
+FROM golang:1.27.3-alpine3.24 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/sub-mixer ./cmd/sub-mixer && \
     CGO_ENABLED=0 go build -trimpath -o /out/extras-api ./cmd/extras-api
 
-FROM alpine:3.20
+FROM alpine:3.24
 LABEL org.opencontainers.image.source="https://github.com/egor-muindor/submix" \
       org.opencontainers.image.description="Extension for the Remnawave 3.x panel: mixes external and static connection links into subscriptions" \
       org.opencontainers.image.licenses="GPL-3.0-or-later"
